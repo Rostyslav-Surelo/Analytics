@@ -1,0 +1,101 @@
+WITH country_total_msg AS (
+  -- Total number of unique emails by country
+  SELECT
+    sp.country,
+    COUNT(DISTINCT e.id_message) AS total_country_email_cnt
+  FROM `DA.email_sent` e
+  JOIN `DA.account_session` acs ON acs.account_id = e.id_account
+  JOIN `DA.session_params` sp ON acs.ga_session_id = sp.ga_session_id
+  GROUP BY sp.country
+), country_total_accounts AS (
+  -- Total number of accounts by country
+  SELECT
+    sp.country,
+    COUNT(DISTINCT a.id) AS total_country_account_cnt
+  FROM DA.account_session acs
+  JOIN DA.account a ON acs.account_id = a.id
+  JOIN DA.session_params sp ON acs.ga_session_id = sp.ga_session_id
+  GROUP BY sp.country
+), ranked_totals AS (
+  -- We rank countries by the total number of accounts and emails
+  SELECT
+    ca.country,
+    ca.total_country_account_cnt,
+    cm.total_country_email_cnt,
+    DENSE_RANK() OVER (ORDER BY ca.total_country_account_cnt DESC) AS rank_total_country_account_cnt,
+    DENSE_RANK() OVER (ORDER BY cm.total_country_email_cnt DESC) AS rank_total_country_sent_cnt
+  FROM country_total_accounts ca
+  JOIN country_total_msg cm ON ca.country = cm.country
+), total_metrics AS (
+  -- Part by email_sent
+  SELECT
+    DATE_ADD(s.date, INTERVAL e.sent_date DAY) AS date,
+    sp.country,
+    a.send_interval,
+    a.is_verified,
+    a.is_unsubscribed,
+    NULL AS account_cnt,
+    COUNT(DISTINCT e.id_message) AS sent_msg,
+    COUNT(DISTINCT o.id_message) AS open_msg,
+    COUNT(DISTINCT v.id_message) AS visit_msg,
+    rt.total_country_account_cnt,
+    rt.total_country_email_cnt,
+    rt.rank_total_country_account_cnt,
+    rt.rank_total_country_sent_cnt
+  FROM `DA.email_sent` e
+  JOIN `DA.account_session` acs ON acs.account_id = e.id_account
+  JOIN `DA.session` s ON acs.ga_session_id = s.ga_session_id
+  JOIN `DA.session_params` sp ON sp.ga_session_id = acs.ga_session_id
+  JOIN `DA.account` a ON a.id = e.id_account
+  LEFT JOIN `DA.email_open` o ON e.id_message = o.id_message
+  LEFT JOIN `DA.email_visit` v ON v.id_message = o.id_message
+  LEFT JOIN ranked_totals rt ON rt.country = sp.country
+  GROUP BY 1,2,3,4,5,10,11,12,13
+
+
+  UNION ALL
+
+
+  -- Part by account
+  SELECT
+    s.date AS date,
+    sp.country,
+    a.send_interval,
+    a.is_verified,
+    a.is_unsubscribed,
+    COUNT(DISTINCT a.id) AS account_cnt,
+    NULL AS sent_msg,
+    NULL AS open_msg,
+    NULL AS visit_msg,
+    rt.total_country_account_cnt,
+    rt.total_country_email_cnt,
+    rt.rank_total_country_account_cnt,
+    rt.rank_total_country_sent_cnt
+  FROM DA.account_session acs
+  JOIN DA.session s ON acs.ga_session_id = s.ga_session_id
+  JOIN DA.account a ON acs.account_id = a.id
+  JOIN DA.session_params sp ON acs.ga_session_id = sp.ga_session_id
+  LEFT JOIN ranked_totals rt ON rt.country = sp.country
+  GROUP BY 1,2,3,4,5,10,11,12,13
+)
+
+
+-- Final select
+SELECT
+  date,
+  country,
+  send_interval,
+  is_verified,
+  is_unsubscribed,
+  SUM(account_cnt) AS account_cnt,
+  SUM(sent_msg) AS sent_msg,
+  SUM(open_msg) AS open_msg,
+  SUM(visit_msg) AS visit_msg,
+  MAX(total_country_account_cnt) AS total_country_account_cnt,
+  MAX(total_country_email_cnt) AS total_country_sent_cnt,
+  MAX(rank_total_country_account_cnt) AS rank_total_country_account_cnt,
+  MAX(rank_total_country_sent_cnt) AS rank_total_country_sent_cnt
+FROM total_metrics
+WHERE rank_total_country_sent_cnt <= 10 OR rank_total_country_account_cnt <= 10
+GROUP BY date, country, send_interval, is_verified, is_unsubscribed
+ORDER BY 1, 2
